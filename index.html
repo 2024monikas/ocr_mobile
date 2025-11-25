@@ -30,6 +30,7 @@
     window.firebaseCollection = collection;
   </script>
 
+  <!-- Your UI + CSS unchanged -->
   <style>
     :root{ --accent:#0b69ff; --muted:#6b7280; --bg:#f7fafc; --card:#ffffff; }
     html,body{height:100%;margin:0;background:linear-gradient(180deg,#e6f0ff 0%, #f7fafc 100%);font-family:Inter,Segoe UI,Roboto,Arial;color:#111}
@@ -55,7 +56,7 @@
 
     .result{white-space:pre-wrap;font-size:14px;line-height:1.5;color:#0b1226}
     .result-header{display:flex;justify-content:space-between;align-items:center;gap:8px}
-    .progress{height:8px;background:#eef2ff;border-radius:999px;overflow:hidden;display:block;margin-top:8px}
+    .progress{height:8px;background:#eef2ff;border-radius:999px;overflow:hidden;display:none;margin-top:8px}
     .progress > i{display:block;height:100%;width:0%;background:linear-gradient(90deg,var(--accent),#1aa3ff)}
 
     footer{padding:12px;text-align:center;font-size:13px;color:var(--muted)}
@@ -63,10 +64,10 @@
     @media (max-width:420px){.app{margin:0;border-radius:0}}    
   </style>
 </head>
+
 <body>
   <div class="app">
     <header>
-      <!-- local preview icon uses uploaded image path (will be converted to a URL by the environment) -->
       <img class="logo" src="c:\Users\monik\Downloads\logo.jpeg" alt="logo">
       <div>
         <h1>Scanner — Mobile UI</h1>
@@ -81,9 +82,7 @@
             <div class="muted">Input</div>
             <strong style="display:block;margin-top:6px">Camera or Upload</strong>
           </div>
-          <div style="text-align:right">
-            <small class="muted">Auto-save to Firestore</small>
-          </div>
+          <small class="muted">Auto-save to Firestore</small>
         </div>
 
         <div style="margin-top:12px" class="controls">
@@ -92,17 +91,16 @@
         </div>
 
         <input id="fileInput" type="file" accept="image/*" style="display:none" onchange="onFile(event)">
-
         <video id="camera" autoplay playsinline></video>
         <img id="preview" alt="preview" />
 
         <div style="display:flex;gap:8px;margin-top:10px">
           <button id="captureBtn" class="btn ghost" style="display:none" onclick="capture()">Capture</button>
           <button id="closeBtn" class="btn ghost" style="display:none" onclick="closeCamera()">Close</button>
-          <button id="extractBtn" class="btn primary" style="flex:1;margin-left:auto" onclick="startOCR()">Extract Text</button>
+          <button id="extractBtn" class="btn primary" style="flex:1" onclick="startOCR()">Extract Text</button>
         </div>
 
-        <div class="progress" id="progressBar" style="display:none"><i></i></div>
+        <div class="progress" id="progressBar"><i></i></div>
       </div>
 
       <div class="card">
@@ -117,7 +115,9 @@
           </div>
         </div>
 
-        <div id="resultBox" class="result" style="margin-top:10px">No text yet. Capture or upload an image and tap Extract.</div>
+        <div id="resultBox" class="result" style="margin-top:10px">
+          No text yet. Capture or upload an image and tap Extract.
+        </div>
       </div>
 
       <div class="card muted">
@@ -126,20 +126,16 @@
             <strong>History</strong>
             <div class="muted" style="font-size:12px;margin-top:4px">Saved scans will appear in Firestore</div>
           </div>
-          <div>
-            <button class="btn ghost" onclick="openHistory()">Open Console</button>
-          </div>
+          <button class="btn ghost" onclick="openHistory()">Open Console</button>
         </div>
       </div>
     </main>
 
-    
-
-    <button class="fab" title="Quick capture" onclick="quickCapture()">📷</button>
+    <button class="fab" onclick="quickCapture()">📷</button>
   </div>
 
+  <!-- 🔥 NEW INTEGRATED OCR SCRIPT WITH PREPROCESSING -->
   <script>
-    // state
     let selectedImage = null;
     let extractedText = '';
     let cameraStream = null;
@@ -151,43 +147,95 @@
     const closeBtn = document.getElementById('closeBtn');
     const progressBar = document.getElementById('progressBar');
 
-    // handle upload
-    function onFile(e){
+    /* --------------------------------------
+       IMAGE PREPROCESSING (Grayscale + Contrast)
+    -----------------------------------------*/
+    async function preprocessImage(blob) {
+      return new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+
+          canvas.width = img.width;
+          canvas.height = img.height;
+
+          ctx.drawImage(img, 0, 0);
+
+          let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          let data = imgData.data;
+
+          // grayscale
+          for (let i = 0; i < data.length; i += 4) {
+            let avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+            data[i] = data[i + 1] = data[i + 2] = avg;
+          }
+          ctx.putImageData(imgData, 0, 0);
+
+          // boost contrast
+          let contrast = 1.35;
+          const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+
+          imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          data = imgData.data;
+
+          for (let i = 0; i < data.length; i += 4) {
+            data[i] = factor * (data[i] - 128) + 128;
+            data[i + 1] = factor * (data[i + 1] - 128) + 128;
+            data[i + 2] = factor * (data[i + 2] - 128) + 128;
+          }
+          ctx.putImageData(imgData, 0, 0);
+
+          canvas.toBlob(result => resolve(result), 'image/png');
+        };
+
+        img.src = URL.createObjectURL(blob);
+      });
+    }
+
+    /* --------------------------------- */
+    /* FILE UPLOAD                       */
+    /* --------------------------------- */
+    function onFile(e) {
       const f = e.target.files[0];
-      if(!f) return;
+      if (!f) return;
       selectedImage = f;
       showPreview(f);
     }
 
-    function showPreview(file){
+    function showPreview(file) {
       const reader = new FileReader();
-      reader.onload = ()=>{
+      reader.onload = () => {
         preview.src = reader.result;
-        preview.style.display = 'block';
-        cameraEl.style.display = 'none';
-        captureBtn.style.display = 'none';
-        closeBtn.style.display = 'none';
+        preview.style.display = "block";
+        cameraEl.style.display = "none";
+        captureBtn.style.display = "none";
+        closeBtn.style.display = "none";
       };
       reader.readAsDataURL(file);
     }
 
-    // camera controls
-    async function openCamera(){
-      try{
-        cameraStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' } });
+    /* --------------------------------- */
+    /* CAMERA CONTROLS                   */
+    /* --------------------------------- */
+    async function openCamera() {
+      try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' }
+        });
         cameraEl.srcObject = cameraStream;
         cameraEl.style.display = 'block';
         preview.style.display = 'none';
         captureBtn.style.display = 'inline-block';
         closeBtn.style.display = 'inline-block';
-      }catch(e){
-        alert('Unable to access camera: '+e.message);
+      } catch (e) {
+        alert('Unable to access camera: ' + e.message);
       }
     }
 
-    function closeCamera(){
-      if(cameraStream){
-        cameraStream.getTracks().forEach(t=>t.stop());
+    function closeCamera() {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(t => t.stop());
         cameraStream = null;
       }
       cameraEl.style.display = 'none';
@@ -195,77 +243,102 @@
       closeBtn.style.display = 'none';
     }
 
-    function capture(){
+    function capture() {
       const canvas = document.createElement('canvas');
       canvas.width = cameraEl.videoWidth || 1280;
       canvas.height = cameraEl.videoHeight || 720;
+
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(cameraEl,0,0,canvas.width,canvas.height);
-      canvas.toBlob(b=>{
+      ctx.drawImage(cameraEl, 0, 0, canvas.width, canvas.height);
+
+      canvas.toBlob(b => {
         selectedImage = b;
         showPreview(b);
-        // auto-stop camera after capture for phone battery
         closeCamera();
       }, 'image/jpeg', 0.95);
     }
 
-    // quick FAB capture - opens camera then takes photo
-    async function quickCapture(){
+    async function quickCapture() {
       await openCamera();
-      // short delay to allow camera warm-up on some devices
-      setTimeout(()=>{
-        capture();
-      }, 900);
+      setTimeout(() => capture(), 900);
     }
 
-    // OCR + UI progress
-    function setProgress(p){
-      progressBar.style.display = p<=0||p>=1 ? 'none' : 'block';
+    /* --------------------------------- */
+    /* PROGRESS UI                      */
+    /* --------------------------------- */
+    function setProgress(p) {
+      progressBar.style.display = "block";
       const bar = progressBar.querySelector('i');
-      bar.style.width = Math.round(p*100)+'%';
-    }
+      bar.style.width = Math.round(p * 100) + "%";
 
-    async function startOCR(){
-      if(!selectedImage) return alert('No image selected or captured');
-      document.getElementById('resultBox').innerText = 'Extracting...';
-      setProgress(0.02);
-
-      Tesseract.recognize(selectedImage, 'eng', {
-        logger: m=>{
-          if(m.status === 'recognizing text') setProgress(m.progress);
-        }
-      }).then(({data:{text}})=>{
-        extractedText = text.trim();
-        document.getElementById('resultBox').innerText = extractedText || 'No text found.';
-        setProgress(1);
-      }).catch(err=>{
-        document.getElementById('resultBox').innerText = 'Error: '+err.message;
-        setProgress(1);
-      });
-    }
-
-    function copyText(){
-      if(!extractedText) return alert('No text to copy');
-      navigator.clipboard.writeText(extractedText);
-      alert('Copied to clipboard');
-    }
-
-    async function saveToFirebase(){
-      if(!extractedText) return alert('No extracted text to save');
-      try{
-        await window.firebaseAddDoc(window.firebaseCollection(window.firebaseDB, 'ocr_texts'), { text: extractedText, created_at: new Date() });
-        alert('Saved to Firebase');
-      }catch(e){
-        alert('Save failed: '+e.message);
+      if (p >= 1) {
+        setTimeout(() => (progressBar.style.display = "none"), 500);
       }
     }
 
-    function openHistory(){
-      // open Firestore console in new tab for convenience
-      window.open('https://console.firebase.google.com/project/imagescanner-dcfc7/firestore/data', '_blank');
+    /* --------------------------------- */
+    /* OCR (WITH PREPROCESSING)         */
+    /* --------------------------------- */
+    async function startOCR() {
+      if (!selectedImage) return alert("No image selected or captured");
+
+      document.getElementById("resultBox").innerText = "Preprocessing...";
+      setProgress(0.05);
+
+      const processedImage = await preprocessImage(selectedImage);
+
+      document.getElementById("resultBox").innerText = "Extracting...";
+      setProgress(0.1);
+
+      Tesseract.recognize(processedImage, 'eng', {
+        logger: m => {
+          if (m.status === 'recognizing text') setProgress(m.progress);
+        }
+      })
+        .then(({ data: { text } }) => {
+          extractedText = text.trim();
+          document.getElementById("resultBox").innerText =
+            extractedText || "No text detected.";
+          setProgress(1);
+        })
+        .catch(err => {
+          document.getElementById("resultBox").innerText =
+            "OCR Error: " + err.message;
+          setProgress(1);
+        });
     }
 
-    // expose some functions for debugging
+    /* --------------------------------- */
+    /* COPY / SAVE                       */
+    /* --------------------------------- */
+    function copyText() {
+      if (!extractedText) return alert("No text to copy");
+      navigator.clipboard.writeText(extractedText);
+      alert("Copied!");
+    }
+
+    async function saveToFirebase() {
+      if (!extractedText) return alert("No extracted text to save");
+
+      try {
+        await window.firebaseAddDoc(
+          window.firebaseCollection(window.firebaseDB, "ocr_texts"),
+          { text: extractedText, created_at: new Date() }
+        );
+        alert("Saved to Firebase");
+      } catch (e) {
+        alert("Save failed: " + e.message);
+      }
+    }
+
+    function openHistory() {
+      window.open(
+        "https://console.firebase.google.com/project/imagescanner-dcfc7/firestore/data",
+        "_blank"
+      );
+    }
+
+    /* Expose */
     window.openCamera = openCamera;
     window.closeCamera = closeCamera;
     window.capture = capture;
@@ -273,6 +346,8 @@
     window.copyText = copyText;
     window.saveToFirebase = saveToFirebase;
     window.onFile = onFile;
+    window.quickCapture = quickCapture;
   </script>
+
 </body>
 </html>
